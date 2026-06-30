@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>piano LEDs · web demo</title>
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --surface: #161619;
+    --border: #2a2a2f;
+    --text: #c8c8cc;
+    --text-dim: #6b6b73;
+    --accent: #6c8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 24px 16px;
+  }
+  h1 {
+    font-size: 1.25rem; font-weight: 500; letter-spacing: 0.02em;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    color: var(--text-dim); font-size: 0.8rem; margin-bottom: 20px;
+  }
+  .subtitle a { color: var(--accent); text-decoration: none; }
+  .subtitle a:hover { text-decoration: underline; }
+
+  /* ---- LED strip ---- */
+  #led-strip-canvas {
+    display: block;
+    width: 100%; max-width: 900px;
+    border-radius: 10px;
+    background: #000;
+    margin-bottom: 24px;
+    image-rendering: pixelated;
+  }
+
+  /* ---- keyboard legend ---- */
+  .legend-label {
+    font-size: 0.7rem; color: var(--text-dim); text-align: center;
+    margin-bottom: 6px; letter-spacing: 0.04em;
+  }
+  .keyboard-wrap {
+    display: flex; flex-direction: column; align-items: center;
+    width: 100%; max-width: 900px; gap: 4px;
+    margin-bottom: 28px;
+  }
+  .key-row {
+    display: flex; gap: 4px; justify-content: center; flex-wrap: wrap;
+  }
+  .key {
+    display: flex; align-items: center; justify-content: center;
+    min-width: 42px; height: 42px;
+    border-radius: 6px;
+    font-size: 0.75rem; font-weight: 500;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    transition: background 0.08s, border-color 0.08s, color 0.08s, box-shadow 0.08s;
+    user-select: none;
+    cursor: default;
+  }
+  .key.black {
+    background: #000;
+    color: var(--text);
+  }
+  .key.active {
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(108,140,255,0.3);
+  }
+  .key .note-label {
+    font-size: 0.6rem; opacity: 0.6; margin-left: 3px;
+  }
+  .key.active .note-label { opacity: 0.85; }
+
+  /* ---- controls row ---- */
+  .controls {
+    display: flex; gap: 16px; align-items: center;
+    flex-wrap: wrap; justify-content: center;
+    margin-bottom: 16px;
+  }
+  .controls label {
+    font-size: 0.75rem; color: var(--text-dim);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .controls input[type="range"] {
+    width: 80px; accent-color: var(--accent);
+  }
+  .controls output {
+    font-size: 0.75rem; min-width: 28px; text-align: center;
+    color: var(--text);
+  }
+
+  /* ---- note info ---- */
+  #note-info {
+    font-size: 0.75rem; color: var(--text-dim);
+    text-align: center; min-height: 1.2em;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+
+<h1>piano LEDs</h1>
+<p class="subtitle">
+  circle-of-fifths &middot; ADSR envelope &middot; live bloom
+  &mdash; <a href="https://github.com/kennbyee25/piano-leds" target="_blank">original project</a>
+</p>
+
+<canvas id="led-strip-canvas" width="900" height="120"></canvas>
+
+<div class="controls">
+  <label>
+    bloom
+    <input type="range" id="bloom-slider" min="0" max="4" step="0.1" value="2.0">
+    <output id="bloom-value">2.0</output>
+  </label>
+  <label>
+    release
+    <input type="range" id="release-slider" min="50" max="1200" step="10" value="300">
+    <output id="release-value">300</output>
+    <span style="font-size:0.65rem;opacity:0.5">ms</span>
+  </label>
+</div>
+
+<div class="keyboard-wrap">
+  <div class="legend-label">press keys &mdash; hold to sustain</div>
+  <div class="key-row" id="keyboard-legend"></div>
+</div>
+
+<div id="note-info">&nbsp;</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Ported from piano-leds Python library
+   ============================================================ */
+
+// ---- circle-of-fifths color mapping (ported from color.py) ----
+const CHROMATIC_TO_FIFTHS = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
+
+function pitchClassToHue(pc, hueOffset, hueStep) {
+  return (hueOffset + hueStep * CHROMATIC_TO_FIFTHS[pc % 12]) % 360;
+}
+
+function hsvToRgb(h, s, v) {
+  // h: [0, 360), s: [0, 1], v: [0, 1]
+  const c = v * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs(hp % 2 - 1));
+  const m = v - c;
+  const i = Math.floor(hp) % 6;
+  switch (i) {
+    case 0: return [c + m, x + m, m];
+    case 1: return [x + m, c + m, m];
+    case 2: return [m, c + m, x + m];
+    case 3: return [m, x + m, c + m];
+    case 4: return [x + m, m, c + m];
+    case 5: return [c + m, m, x + m];
+  }
+  return [m, m, m];
+}
+
+function noteToRgb(midiNote, amp, hueOffset, hueStep) {
+  const h = pitchClassToHue(midiNote % 12, hueOffset, hueStep);
+  return hsvToRgb(h, 1.0, amp);
+}
+
+// ---- ADSR envelope (ported from envelope.py) ----
+function adsrBrightness(note, t, cfg) {
+  // note: { tOn, tOff (null if held), pedaled }
+  const attack  = cfg.attackMs  / 1000;
+  const decay   = cfg.decayMs   / 1000;
+  const release = (note.pedaled ? cfg.pedalReleaseMs : cfg.releaseMs) / 1000;
+  const sustain = cfg.sustain;
+
+  if (note.tOff === null) {
+    const dt = t - note.tOn;
+    if (dt < attack) return dt / attack;
+    const dt2 = dt - attack;
+    if (dt2 < decay) return 1.0 - (1.0 - sustain) * (dt2 / decay);
+    return sustain;
+  } else {
+    const dtHeld = note.tOff - note.tOn;
+    let level;
+    if (dtHeld < attack) {
+      level = dtHeld / attack;
+    } else if (dtHeld - attack < decay) {
+      level = 1.0 - (1.0 - sustain) * ((dtHeld - attack) / decay);
+    } else {
+      level = sustain;
+    }
+    const dtRel = t - note.tOff;
+    if (dtRel >= release) return 0.0;
+    return level * (1.0 - dtRel / release);
+  }
+}
+
+// ---- Note state management ----
+class NoteManager {
+  constructor() {
+    this.notes = {};   // midiNote -> { midiNote, velocity, tOn, tOff, pedaled }
+  }
+  noteOn(midiNote, velocity) {
+    this.notes[midiNote] = {
+      midiNote,
+      velocity,
+      tOn: performance.now() / 1000,
+      tOff: null,
+      pedaled: false,
+    };
+  }
+  noteOff(midiNote) {
+    const n = this.notes[midiNote];
+    if (n && n.tOff === null) {
+      n.tOff = performance.now() / 1000;
+    }
+  }
+  getActive(t, adsrCfg) {
+    const active = [];
+    for (const [pitch, n] of Object.entries(this.notes)) {
+      const amp = adsrBrightness(n, t, adsrCfg);
+      if (amp > 0.001) {
+        active.push({ note: n, amp });
+      } else {
+        delete this.notes[pitch];
+      }
+    }
+    return active;
+  }
+}
+
+// ---- Bloom (1D gaussian convolution approximation, ported from render.py) ----
+function boxBlur1D(buf, radius) {
+  // buf: Float64Array of length n
+  const n = buf.length;
+  const out = new Float64Array(n);
+  const r = Math.max(1, radius);
+  for (let i = 0; i < n; i++) {
+    let sum = 0, count = 0;
+    for (let j = -r; j <= r; j++) {
+      const idx = i + j;
+      if (idx >= 0 && idx < n) { sum += buf[idx]; count++; }
+    }
+    out[i] = sum / count;
+  }
+  return out;
+}
+
+function gaussianBlurApprox(buf, sigma) {
+  // 3 passes of box blur approximates gaussian
+  const r = Math.round(Math.sqrt(sigma * sigma * 4 + 1) * 0.5);
+  if (r < 1) return buf.slice();
+  let a = buf.slice();
+  for (let pass = 0; pass < 3; pass++) a = boxBlur1D(a, r);
+  return a;
+}
+
+/* ============================================================
+   Keyboard mapping
+   ============================================================ */
+
+// MIDI note 60 = middle C.
+// We cover 2 octaves: 48 (C3) to 71 (B4) = 24 notes.
+const MIDI_BASE = 48;  // C3
+const NOTE_COUNT = 25; // C3 to C5 (MIDI 48..72)
+
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+function midiToName(m) {
+  const oct = Math.floor(m / 12) - 1;
+  return NOTE_NAMES[m % 12] + oct;
+}
+
+// Build note arrays for keyboard mapping
+const whiteKeys = []; // midi note numbers of white keys (C,D,E,F,G,A,B)
+const blackKeys = []; // midi note numbers of black keys (C#,D#,F#,G#,A#)
+for (let m = MIDI_BASE; m < MIDI_BASE + NOTE_COUNT; m++) {
+  const pc = m % 12;
+  if ([1,3,6,8,10].includes(pc)) {
+    blackKeys.push(m);
+  } else {
+    whiteKeys.push(m);
+  }
+}
+
+// Physical keyboard rows mapping to piano keys
+// Bottom row (Z row): Z X C V B N M , . /  -> black keys (8)
+// Home row: A S D F G H J K L ; '  -> white keys (10)
+// Top row: Q W E R T Y U I O P [ ]  -> white keys (remaining) + 2 extra white for C5/D5?
+const KEY_MAP = {};
+
+// Map top row (QWERTYUIOP) to first 10 white keys
+'qwertyuiop'.split('').forEach((key, i) => {
+  if (i < whiteKeys.length) KEY_MAP[key] = whiteKeys[i];
+});
+
+// Map home row (ASDFGHJKL;) to next white keys
+'asdfghjkl;'.split('').forEach((key, i) => {
+  const idx = 10 + i;
+  if (idx < whiteKeys.length) KEY_MAP[key] = whiteKeys[idx];
+});
+
+// Map Z row (ZXCVBNM,./) to black keys
+'zxcvbnm,./'.split('').forEach((key, i) => {
+  if (i < blackKeys.length) KEY_MAP[key] = blackKeys[i];
+});
+
+// Reverse map: midiNote -> array of key labels
+const MIDI_TO_KEYS = {};
+for (const [key, midi] of Object.entries(KEY_MAP)) {
+  if (!MIDI_TO_KEYS[midi]) MIDI_TO_KEYS[midi] = [];
+  MIDI_TO_KEYS[midi].push(key.toUpperCase());
+}
+
+/* ============================================================
+   UI
+   ============================================================ */
+
+const canvas = document.getElementById('led-strip-canvas');
+const ctx = canvas.getContext('2d');
+const CANVAS_W = canvas.width;
+const CANVAS_H = canvas.height;
+
+// ADSR config
+const adsrCfg = {
+  attackMs: 10,
+  decayMs: 80,
+  sustain: 0.75,
+  releaseMs: 300,
+  pedalReleaseMs: 800,
+};
+
+const hueOffset = 240;
+const hueStep = 30;
+
+const noteMgr = new NoteManager();
+const activeKeyEls = {};
+
+// ---- Build keyboard legend ----
+const legendEl = document.getElementById('keyboard-legend');
+// Sort by MIDI note for left-to-right keyboard layout
+const allNotes = [];
+for (let m = MIDI_BASE; m < MIDI_BASE + NOTE_COUNT; m++) {
+  allNotes.push({
+    midi: m,
+    name: midiToName(m),
+    isBlack: blackKeys.includes(m),
+    keys: MIDI_TO_KEYS[m] || []
+  });
+}
+allNotes.forEach((info) => {
+  const div = document.createElement('div');
+  div.className = 'key' + (info.isBlack ? ' black' : '');
+  const keyLabel = info.keys[0] || ''; // take first key if multiple map
+  div.innerHTML = keyLabel ? 
+    `${keyLabel} <span class="note-label">${info.name}</span>` : 
+    info.name;
+  div.title = `${info.name} (${keyLabel || 'unmapped'}) — MIDI ${info.midi}`;
+  div.dataset.midi = info.midi;
+  legendEl.appendChild(div);
+  if (keyLabel) {
+    // Store reference to element for highlighting
+    const keyUpper = keyLabel.toLowerCase();
+    activeKeyEls[keyUpper] = div;
+  }
+});
+
+// ---- Controls ----
+const bloomSlider = document.getElementById('bloom-slider');
+const bloomVal = document.getElementById('bloom-value');
+bloomSlider.addEventListener('input', () => {
+  bloomVal.textContent = parseFloat(bloomSlider.value).toFixed(1);
+});
+
+const releaseSlider = document.getElementById('release-slider');
+const releaseVal = document.getElementById('release-value');
+releaseSlider.addEventListener('input', () => {
+  adsrCfg.releaseMs = parseInt(releaseSlider.value);
+  releaseVal.textContent = releaseSlider.value;
+});
+
+// ---- Keyboard input ----
+const pressed = {};
+
+document.addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  const key = e.key.toLowerCase();
+  const midi = KEY_MAP[key];
+  if (midi !== undefined) {
+    e.preventDefault();
+    if (!pressed[midi]) {
+      pressed[midi] = true;
+      // Add slight velocity variation for more natural feel
+      const velocity = 0.7 + Math.random() * 0.3;
+      noteMgr.noteOn(midi, velocity);
+      if (activeKeyEls[key]) activeKeyEls[key].classList.add('active');
+    }
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  const key = e.key.toLowerCase();
+  const midi = KEY_MAP[key];
+  if (midi !== undefined) {
+    e.preventDefault();
+    noteMgr.noteOff(midi);
+    if (activeKeyEls[key]) activeKeyEls[key].classList.remove('active');
+    delete pressed[midi];
+  }
+});
+
+// ---- Render loop ----
+const noteInfo = document.getElementById('note-info');
+const LED_PAD = 20;  // pixels padding on each side
+const LED_TOP = 10;  // y offset
+const LED_H = 80;    // height per LED
+
+function render() {
+  const t = performance.now() / 1000;
+  adsrCfg.releaseMs = parseInt(releaseSlider.value);
+  const active = noteMgr.getActive(t, adsrCfg);
+  const bloomMix = parseFloat(bloomSlider.value);
+
+  // Update note info
+  if (active.length > 0) {
+    const names = active.map(a => midiToName(a.note.midiNote)).join(' ');
+    noteInfo.textContent = names;
+  } else {
+    noteInfo.innerHTML = '&nbsp;';
+  }
+
+  const n = NOTE_COUNT;
+  const ledW = (CANVAS_W - LED_PAD * 2) / n;
+
+  // Clear
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // ---- Place notes (ported from render.py place_notes) ----
+  const buf = new Float64Array(n * 3); // flattened rgb per LED
+
+  for (const a of active) {
+    const { note, amp } = a;
+    const [r, g, b] = noteToRgb(note.midiNote, amp, hueOffset, hueStep);
+    const ledIdx = note.midiNote - MIDI_BASE;
+    if (ledIdx >= 0 && ledIdx < n) {
+      buf[ledIdx * 3 + 0] += r;
+      buf[ledIdx * 3 + 1] += g;
+      buf[ledIdx * 3 + 2] += b;
+    }
+  }
+
+  // ---- Bloom (1D per channel, ported from render.py apply_bloom) ----
+  let finalBuf = buf;
+  if (bloomMix > 0) {
+    const sigma = bloomMix * 0.8; // map bloom slider to sigma
+    const chR = new Float64Array(n);
+    const chG = new Float64Array(n);
+    const chB = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      chR[i] = buf[i * 3];
+      chG[i] = buf[i * 3 + 1];
+      chB[i] = buf[i * 3 + 2];
+    }
+    const blurR = gaussianBlurApprox(chR, sigma);
+    const blurG = gaussianBlurApprox(chG, sigma);
+    const blurB = gaussianBlurApprox(chB, sigma);
+
+    // Add bloom: original + mix * blur (clamped to [0,1])
+    finalBuf = new Float64Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const r = Math.min(1, buf[i * 3]     + bloomMix * blurR[i]);
+      const g = Math.min(1, buf[i * 3 + 1] + bloomMix * blurG[i]);
+      const b = Math.min(1, buf[i * 3 + 2] + bloomMix * blurB[i]);
+      finalBuf[i * 3]     = r;
+      finalBuf[i * 3 + 1] = g;
+      finalBuf[i * 3 + 2] = b;
+    }
+  }
+
+  // ---- Scale brightness (ported from apply_brightness_scale + finalize) ----
+  const brightnessScale = 1.0; // could be a slider
+  // Draw LED strips
+  for (let i = 0; i < n; i++) {
+    const r = Math.round(finalBuf[i * 3]     * brightnessScale * 255);
+    const g = Math.round(finalBuf[i * 3 + 1] * brightnessScale * 255);
+    const b = Math.round(finalBuf[i * 3 + 2] * brightnessScale * 255);
+
+    if (r + g + b > 0) {
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      const x = LED_PAD + i * ledW;
+      ctx.fillRect(Math.round(x), LED_TOP, Math.ceil(ledW), LED_H);
+    }
+  }
+
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>
