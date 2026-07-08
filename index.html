@@ -135,8 +135,54 @@
   <div class="key-row" id="keyboard-legend"></div>
 </div>
 
+<div class="controls">
+  <label>
+    instrument
+    <select id="instrument-select">
+      <option value="acoustic_grand_piano">Grand Piano</option>
+      <option value="bright_acoustic_piano">Bright Piano</option>
+      <option value="electric_piano_1">Electric Piano 1</option>
+      <option value="electric_piano_2">Electric Piano 2</option>
+      <option value="honkytonk_piano">Honky-Tonk</option>
+      <option value="harpsichord">Harpsichord</option>
+      <option value="clavinet">Clavinet</option>
+      <option value="celesta">Celesta</option>
+      <option value="glockenspiel">Glockenspiel</option>
+      <option value="music_box">Music Box</option>
+      <option value="vibraphone">Vibraphone</option>
+      <option value="marimba">Marimba</option>
+      <option value="xylophone">Xylophone</option>
+      <option value="church_organ">Church Organ</option>
+      <option value="reed_organ">Reed Organ</option>
+      <option value="accordion">Accordion</option>
+      <option value="acoustic_guitar_nylon">Nylon Guitar</option>
+      <option value="acoustic_guitar_steel">Steel Guitar</option>
+      <option value="electric_guitar_clean">Clean Guitar</option>
+      <option value="violin">Violin</option>
+      <option value="cello">Cello</option>
+      <option value="tremolo_strings">Tremolo Strings</option>
+      <option value="pizzicato_strings">Pizzicato</option>
+      <option value="orchestral_harp">Harp</option>
+      <option value="trumpet">Trumpet</option>
+      <option value="trombone">Trombone</option>
+      <option value="french_horn">French Horn</option>
+      <option value="oboe">Oboe</option>
+      <option value="clarinet">Clarinet</option>
+      <option value="flute">Flute</option>
+      <option value="pan_flute">Pan Flute</option>
+      <option value="choir_aahs">Choir Aahs</option>
+      <option value="voice_oohs">Voice Oohs</option>
+      <option value="string_ensemble_1">Strings Ensemble</option>
+      <option value="pad_4_choir">Soft Pad</option>
+      <option value="fx_4_atmosphere">Atmosphere</option>
+    </select>
+    <span id="inst-loading" style="font-size:0.65rem;opacity:0;color:var(--accent)">loading...</span>
+  </label>
+</div>
+
 <div id="note-info">&nbsp;</div>
 
+<script src="https://raw.githubusercontent.com/danigb/soundfont-player/master/dist/soundfont-player.min.js"></script>
 <script>
 "use strict";
 
@@ -388,8 +434,45 @@ releaseSlider.addEventListener('input', () => {
   releaseVal.textContent = releaseSlider.value;
 });
 
+// ---- Soundfont audio setup ----
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let currentInstrument = null;       // { play, stop }
+let instrumentName = 'acoustic_grand_piano';
+let instrumentsLoaded = {};         // cache: name -> instrument obj
+const instSelect = document.getElementById('instrument-select');
+const instLoading = document.getElementById('inst-loading');
+
+function loadInstrument(name) {
+  if (instrumentsLoaded[name]) {
+    currentInstrument = instrumentsLoaded[name];
+    return;
+  }
+  instLoading.style.opacity = '1';
+  // resume context if suspended (autoplay policy)
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  Soundfont.instrument(audioCtx, name).then(function(instr) {
+    instrumentsLoaded[name] = instr;
+    if (instrumentName === name) {
+      currentInstrument = instr;
+    }
+    instLoading.style.opacity = '0';
+  }).catch(function(err) {
+    console.warn('Failed to load instrument:', name, err);
+    instLoading.style.opacity = '0';
+  });
+}
+
+// Load default instrument
+loadInstrument('acoustic_grand_piano');
+
+instSelect.addEventListener('change', function() {
+  instrumentName = this.value;
+  loadInstrument(instrumentName);
+});
+
 // ---- Keyboard input ----
 const pressed = {};
+const heldNoteStops = {};   // midi -> { stopTime id or stop function }
 
 document.addEventListener('keydown', (e) => {
   if (e.repeat) return;
@@ -402,6 +485,20 @@ document.addEventListener('keydown', (e) => {
       // Add slight velocity variation for more natural feel
       const velocity = 0.7 + Math.random() * 0.3;
       noteMgr.noteOn(midi, velocity);
+
+      // Play sound
+      if (currentInstrument) {
+        // stop any previous lingering note on same midi
+        if (heldNoteStops[midi]) {
+          heldNoteStops[midi].stop(audioCtx.currentTime);
+        }
+        const player = currentInstrument.play(midi, audioCtx.currentTime, {
+          gain: velocity,
+          duration: 0,  // 0 means hold until manual stop
+        });
+        heldNoteStops[midi] = player;
+      }
+
       if (activeKeyEls[key]) activeKeyEls[key].classList.add('active');
     }
   }
@@ -413,6 +510,13 @@ document.addEventListener('keyup', (e) => {
   if (midi !== undefined) {
     e.preventDefault();
     noteMgr.noteOff(midi);
+
+    // Stop sound
+    if (heldNoteStops[midi]) {
+      heldNoteStops[midi].stop(audioCtx.currentTime);
+      delete heldNoteStops[midi];
+    }
+
     if (activeKeyEls[key]) activeKeyEls[key].classList.remove('active');
     delete pressed[midi];
   }
